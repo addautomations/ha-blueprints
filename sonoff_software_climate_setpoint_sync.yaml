@@ -1,0 +1,93 @@
+blueprint:
+  name: Sonoff Zigbee Thermostat - Target Temperature Sync
+  description: 'v2026.11.1 - Synchronize only the target temperature between a Home
+    Assistant software climate entity and a SONOFF physical thermostat in both directions.
+    Each thermostat retains its own temperature sensor and HVAC configuration. No
+    external temperature updates, sensor selection, keepalive, HVAC mode or relay
+    commands. Designed for single-setpoint climate entities with compatible temperature
+    ranges and steps. Synchronizes on setpoint changes only.
+
+    '
+  domain: automation
+  author: ADD Automations
+  homeassistant:
+    min_version: 2026.7.0
+  input:
+    software_climate:
+      name: Software Climate
+      selector:
+        entity:
+          domain:
+          - climate
+          multiple: false
+          reorder: false
+    sonoff_climate:
+      name: Sonoff Physical Thermostat
+      selector:
+        entity:
+          domain:
+          - climate
+          multiple: false
+          reorder: false
+    setpoint_tolerance:
+      name: Setpoint tolerance
+      description: Minimum difference required to send an update. Use a value below
+        the smallest supported setpoint step.
+      default: 0.25
+      selector:
+        number:
+          min: 0.01
+          max: 1.0
+          step: 0.01
+          mode: box
+mode: queued
+max: 10
+variables:
+  software_climate: !input software_climate
+  sonoff_climate: !input sonoff_climate
+  setpoint_tolerance: !input setpoint_tolerance
+triggers:
+- trigger: climate.target_temperature_changed
+  target:
+    entity_id: !input software_climate
+  options:
+    threshold:
+      type: any
+  id: software_setpoint
+- trigger: climate.target_temperature_changed
+  target:
+    entity_id: !input sonoff_climate
+  options:
+    threshold:
+      type: any
+  id: physical_setpoint
+conditions:
+- alias: Both thermostats must be distinct and available
+  condition: template
+  value_template: "{{ software_climate != sonoff_climate\n   and has_value(software_climate)\n
+    \  and has_value(sonoff_climate) }}\n"
+actions:
+- alias: Determine the synchronization direction
+  variables:
+    source_climate: '{{ software_climate if trigger.id == ''software_setpoint'' else
+      sonoff_climate }}'
+    target_climate: '{{ sonoff_climate if trigger.id == ''software_setpoint'' else
+      software_climate }}'
+    source_temperature: '{{ state_attr(source_climate, ''temperature'') }}'
+    target_temperature: '{{ state_attr(target_climate, ''temperature'') }}'
+    target_minimum: '{{ state_attr(target_climate, ''min_temp'') }}'
+    target_maximum: '{{ state_attr(target_climate, ''max_temp'') }}'
+- alias: Skip unavailable, unsupported or already synchronized setpoints
+  condition: template
+  value_template: "{{ has_value(source_climate) and has_value(target_climate)\n   and
+    is_number(source_temperature) and is_number(target_temperature)\n   and ((source_temperature
+    | float) - (target_temperature | float)) | abs >= (setpoint_tolerance | float)\n
+    \  and (not is_number(target_minimum) or (source_temperature | float) >= (target_minimum
+    | float))\n   and (not is_number(target_maximum) or (source_temperature | float)
+    <= (target_maximum | float)) }}\n"
+- alias: Synchronize target temperature only
+  action: climate.set_temperature
+  target:
+    entity_id: '{{ target_climate }}'
+  data:
+    temperature: '{{ source_temperature | float }}'
