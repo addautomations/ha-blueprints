@@ -1,0 +1,176 @@
+blueprint:
+  name: Sonoff Zigbee Thermostat - Software Climate Sync
+  description: 'Use a SONOFF TP-WGZBA Zigbee2MQTT thermostat as a physical interface
+    for a Home Assistant software climate. The software climate supplies current_temperature
+    to the SONOFF external temperature input and setpoints synchronize in both directions.
+    External temperature is sent at a configurable keepalive interval (5 minutes by
+    default), even if unchanged to prevent remote-source timeout. The SONOFF number
+    entity is inferred from the SONOFF climate entity ID using the Zigbee2MQTT naming
+    pattern. The SONOFF temperature sensor source is set to remote_temperature after
+    a one-second pause at each temperature sync. After reconnecting, wait five seconds
+    for stabilization. Retry after a brief delay on remote-source fallback. No relay
+    or HVAC mode actions.
+
+    '
+  domain: automation
+  author: ADD Automations
+  homeassistant:
+    min_version: 2024.10.0
+  input:
+    software_climate:
+      name: Software Climate (master)
+      selector:
+        entity:
+          domain:
+          - climate
+          multiple: false
+          reorder: false
+    sonoff_climate:
+      name: Sonoff Physical Thermostat
+      selector:
+        entity:
+          domain:
+          - climate
+          multiple: false
+          reorder: false
+    keepalive_interval:
+      name: Keepalive interval
+      description: How often to resend external temperature and reselect remote_temperature,
+        even when the temperature is unchanged.
+      default: /5
+      selector:
+        select:
+          options:
+          - label: Every 1 minute
+            value: /1
+          - label: Every 2 minutes
+            value: /2
+          - label: Every 3 minutes
+            value: /3
+          - label: Every 5 minutes
+            value: /5
+          - label: Every 10 minutes
+            value: /10
+          - label: Every 15 minutes
+            value: /15
+          - label: Every 20 minutes
+            value: /20
+          - label: Every 30 minutes
+            value: /30
+          multiple: false
+          custom_value: false
+          sort: false
+mode: queued
+max: 10
+variables:
+  software_climate: !input software_climate
+  sonoff_climate: !input sonoff_climate
+trigger_variables:
+  sonoff_climate_trigger: !input sonoff_climate
+triggers:
+- trigger: state
+  entity_id: !input software_climate
+  attribute: current_temperature
+  id: room_temperature
+- trigger: state
+  entity_id: !input software_climate
+  attribute: temperature
+  id: software_setpoint
+- trigger: state
+  entity_id: !input sonoff_climate
+  attribute: temperature
+  id: physical_setpoint
+- trigger: state
+  entity_id: !input sonoff_climate
+  from: unavailable
+  id: reconnected
+- trigger: state
+  entity_id: !input sonoff_climate
+  from: unknown
+  id: reconnected
+- trigger: template
+  value_template: '{{ states(sonoff_climate_trigger | replace(''climate.'', ''select.'')
+    ~ ''_temperature_sensor_select'') != ''remote_temperature'' }}'
+  id: source_selection_changed
+- trigger: homeassistant
+  event: start
+  id: refresh
+- trigger: time_pattern
+  minutes: !input keepalive_interval
+  id: refresh
+actions:
+- alias: Allow SONOFF to stabilize before retrying remote temperature sync
+  choose:
+  - conditions:
+    - condition: trigger
+      id: reconnected
+    sequence:
+    - delay: 00:00:05
+  - conditions:
+    - condition: trigger
+      id: source_selection_changed
+    sequence:
+    - delay: 00:00:02
+- alias: Keep SONOFF temperature and remote sensor mode synchronized
+  choose:
+  - conditions:
+    - condition: trigger
+      id:
+      - room_temperature
+      - source_selection_changed
+      - reconnected
+      - refresh
+    - condition: template
+      value_template: "{{ has_value(sonoff_climate) and is_number(state_attr(software_climate,
+        'current_temperature'))\n   and has_value(sonoff_climate | replace('climate.',
+        'number.')\n                 ~ '_external_temperature_input') }}"
+    sequence:
+    - action: number.set_value
+      target:
+        entity_id: '{{ sonoff_climate | replace(''climate.'', ''number.'') ~ ''_external_temperature_input''
+          }}'
+      data:
+        value: '{{ state_attr(software_climate, ''current_temperature'') | float |
+          round(1) }}'
+    - delay: 00:00:01
+    - alias: Keep the SONOFF source set to remote_temperature
+      action: select.select_option
+      target:
+        entity_id: '{{ sonoff_climate | replace(''climate.'', ''select.'') ~ ''_temperature_sensor_select''
+          }}'
+      data:
+        option: remote_temperature
+- alias: Synchronize the target setpoint in both directions
+  choose:
+  - conditions:
+    - condition: trigger
+      id:
+      - software_setpoint
+      - refresh
+    - condition: template
+      value_template: "{{ has_value(software_climate) and has_value(sonoff_climate)\n
+        \  and is_number(state_attr(software_climate, 'temperature'))\n   and is_number(state_attr(sonoff_climate,
+        'temperature'))\n   and (state_attr(software_climate, 'temperature') | float\n
+        \       - state_attr(sonoff_climate, 'temperature') | float) | abs >= 0.25
+        }}"
+    sequence:
+    - action: climate.set_temperature
+      target:
+        entity_id: !input sonoff_climate
+      data:
+        temperature: '{{ state_attr(software_climate, ''temperature'') | float }}'
+  - conditions:
+    - condition: trigger
+      id: physical_setpoint
+    - condition: template
+      value_template: "{{ has_value(software_climate) and has_value(sonoff_climate)\n
+        \  and is_number(state_attr(software_climate, 'temperature'))\n   and is_number(state_attr(sonoff_climate,
+        'temperature'))\n   and (state_attr(software_climate, 'temperature') | float\n
+        \       - state_attr(sonoff_climate, 'temperature') | float) | abs >= 0.25
+        }}"
+    sequence:
+    - action: climate.set_temperature
+      target:
+        entity_id: !input software_climate
+      data:
+        temperature: '{{ state_attr(sonoff_climate, ''temperature'') | float }}'
